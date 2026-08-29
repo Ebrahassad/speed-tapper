@@ -1,0 +1,123 @@
+import 'package:flutter/material.dart';
+
+class GameConstants {
+  GameConstants._();
+
+  // ============================================================
+  // APP
+  // ============================================================
+
+  static const String appName = 'Neon Breaker Pro';
+
+  // ============================================================
+  // GAME
+  // ============================================================
+
+  static const int startingLives = 3;
+  static const int startingLevel = 1;
+
+  // ============================================================
+  // BALL
+  // ============================================================
+
+  static const double ballRadius = 9.0;
+  static const double baseBallHorizontalSpeed = 3.5;
+  static const double baseBallVerticalSpeed = 4.5;
+  static const double ballSpeedPerLevel = 0.2;
+
+  // ============================================================
+  // PADDLE
+  // ============================================================
+
+  static const double defaultPaddleWidth = 100.0;
+  static const double minimumPaddleWidth = 60.0;
+  static const double paddleHeight = 14.0;
+  static const double paddleBottomOffset = 80.0;
+  static const double paddleMinimumHitAngle = 0.18;
+  static const double maxBallSpeed = 9.0;
+  static const double minBallSpeed = 4.5;
+  static const double paddleHitInfluence = 0.12;
+  static const double paddleWidthDecreasePerLevel = 4.0;
+
+  // ============================================================
+  // BRICKS
+  // ============================================================
+
+  static const int brickColumns = 5;
+  static const double brickPadding = 8.0;
+  static const double brickHeight = 24.0;
+  static const double brickTop = 90.0;
+  static const int maximumNormalRows = 6;
+  static const int maximumLevel = 99;
+
+  static const int normalBrickHitScore = 10;
+  static const int normalBrickDestroyScore = 50;
+  static const int nextLevelBonus = 200;
+  static const int lifeLostPenalty = 0;
+  static const int levelUpParticles = 24;
+
+  // ============================================================
+  // BOSS
+  // ============================================================
+
+  static const int bossEveryLevels = 3;
+  static const double bossWidth = 160.0;
+  static const double bossHeight = 50.0;
+  static const double bossY = 100.0;
+  static const int bossBaseHealth = 15;
+  static const int bossHealthPerLevel = 5;
+  static const int bossDestroyBonus = 500;
+
+  // ============================================================
+  // PARTICLES
+  // ============================================================
+
+  static const int particlesPerHit = 12;
+  static const double particleMaxSize = 5.0;
+  static const double particleBaseSize = 3.0;
+  static const double particleVelocityRange = 7.0;
+  static const double particleFadeSpeed = 0.04;
+
+  // ============================================================
+  // VISUALS
+  // ============================================================
+
+  static const Color backgroundTop = Color(0xFF0A0A16);
+  static const Color backgroundBottom = Color(0xFF05050D);
+
+  static const Color panelColor = Color(0xCC0D0B1E);
+
+  static const Color neonCyan = Color(0xFF00E5FF);
+  static const Color neonPink = Color(0xFFFF007F);
+  static const Color neonYellow = Color(0xFFFFE600);
+  static const Color neonGreen = Color(0xFF00FF66);
+
+  static const List<Color> brickColors = [
+    neonPink,
+    neonCyan,
+    neonYellow,
+    neonGreen,
+  ];
+
+  // ============================================================
+  // GLOW
+  // ============================================================
+
+  static const double brickGlowAlpha = 0.45;
+  static const double brickGlowBlur = 10.0;
+
+  static const double ballGlowAlpha = 0.70;
+  static const double ballGlowBlur = 15.0;
+
+  static const double paddleGlowAlpha = 0.70;
+  static const double paddleGlowBlur = 12.0;
+
+  // ============================================================
+  // UI
+  // ============================================================
+
+  static const double hudTop = 40.0;
+  static const double hudHorizontalPadding = 18.0;
+
+  static const double buttonRadius = 30.0;
+}

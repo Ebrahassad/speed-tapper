@@ -1,0 +1,871 @@
+import 'dart:async';
+import 'dart:math';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'core/ads/ads_manager.dart';
+import 'features/game/models/brick.dart';
+import 'features/game/models/particle.dart';
+import 'core/audio/audio_manager.dart';
+import 'core/settings/game_settings.dart';
+import 'features/game/screens/settings_screen.dart';
+import 'features/game/widgets/start_menu.dart';
+
+import 'features/game/painters/game_painter.dart';
+import 'core/constants/game_constants.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+  ]);
+
+  SystemChrome.setEnabledSystemUIMode(
+    SystemUiMode.immersiveSticky,
+  );
+
+  runApp(const NeonBreakerApp());
+}
+
+class NeonBreakerApp extends StatelessWidget {
+  const NeonBreakerApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: GameConstants.appName,
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: GameConstants.backgroundBottom,
+        colorScheme: const ColorScheme.dark(
+          primary: GameConstants.neonCyan,
+          secondary: GameConstants.neonPink,
+          surface: GameConstants.panelColor,
+        ),
+        useMaterial3: true,
+      ),
+      home: const GameScreen(),
+    );
+  }
+}
+
+class GameScreen extends StatefulWidget {
+  const GameScreen({super.key});
+
+  @override
+  State<GameScreen> createState() => _GameScreenState();
+}
+
+class _GameScreenState extends State<GameScreen> {
+  late GameSettings gameSettings;
+  late AudioManager audioManager;
+  bool settingsLoaded = false;
+  bool isNewHighScore = false;
+
+  // ============================================================
+  // GAME STATE
+  // ============================================================
+
+  bool isPlaying = false;
+  bool isPaused = false;
+  bool isGameOver = false;
+  bool _ballWasLost = false;
+
+  int score = 0;
+  int highScore = 0;
+  int lives = GameConstants.startingLives;
+  int level = GameConstants.startingLevel;
+
+  double canvasWidth = 360;
+  double canvasHeight = 640;
+
+  double paddleWidth = 100;
+  double paddleHeight = GameConstants.paddleHeight;
+  double paddleX = 130;
+
+  double ballX = 180;
+  double ballY = 500;
+  double ballRadius = 8;
+
+  double ballDx = 3.5;
+  double ballDy = -4.5;
+
+  final List<Brick> bricks = [];
+  final List<Particle> particles = [];
+
+  Timer? gameTimer;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _loadHighScore();
+    AdsManager.initialize();
+  }
+
+  // ============================================================
+  // ADS
+  // ============================================================
+
+  void _showInterstitial() {
+    AdsManager.showInterstitial();
+  }
+
+  void _showRewardedAd() {
+    AdsManager.showRewarded(
+      onReward: () {
+        if (!mounted) return;
+
+        setState(() {
+          lives++;
+          isGameOver = false;
+          isPlaying = true;
+        });
+
+        _resetBall();
+        _startGameTimer();
+      },
+      onUnavailable: () {
+        if (mounted) {
+          _showMessage('الإعلان غير متاح حالياً');
+        }
+      },
+    );
+  }
+
+  Future<void> _openSettings() async {
+    if (!settingsLoaded || !mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SettingsScreen(
+          settings: gameSettings,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      highScore = gameSettings.highScore;
+    });
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  // ============================================================
+  // HIGH SCORE
+  // ============================================================
+
+  Future<void> _loadHighScore() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    if (!mounted) return;
+
+    setState(() {
+      highScore = prefs.getInt('neon_high_score') ?? 0;
+    });
+  }
+
+  Future<void> _saveHighScore() async {
+    if (score <= highScore) return;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setInt(
+      'neon_high_score',
+      score,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      highScore = score;
+    });
+  }
+
+  // ============================================================
+  // LEVEL
+  // ============================================================
+
+  void _initializeLevel() {
+    bricks.clear();
+    particles.clear();
+
+    paddleWidth = max(
+      GameConstants.minimumPaddleWidth,
+      GameConstants.defaultPaddleWidth -
+          (level * GameConstants.paddleWidthDecreasePerLevel),
+    );
+
+    paddleX = (canvasWidth - paddleWidth) / 2;
+
+    _resetBall();
+
+    final bool bossLevel = level % GameConstants.bossEveryLevels == 0;
+
+    if (bossLevel) {
+      final int hp = GameConstants.bossBaseHealth +
+          (level * GameConstants.bossHealthPerLevel);
+
+      bricks.add(
+        Brick(
+          x: canvasWidth / 2 - GameConstants.bossWidth / 2,
+          y: GameConstants.bossY,
+          width: GameConstants.bossWidth,
+          height: GameConstants.bossHeight,
+          color: const Color(0xFFFF0055),
+          hp: hp,
+          maxHp: hp,
+          isBoss: true,
+        ),
+      );
+
+      return;
+    }
+
+    final int rows = min(
+      GameConstants.maximumNormalRows,
+      3 + level,
+    );
+
+    const int cols = GameConstants.brickColumns;
+
+    const double padding = GameConstants.brickPadding;
+
+    final double brickWidth = (canvasWidth - (padding * (cols + 1))) / cols;
+
+    const double brickHeight = GameConstants.brickHeight;
+
+    const List<Color> neonColors = [
+      Color(0xFFFF007F),
+      Color(0xFF00E5FF),
+      Color(0xFFFFE600),
+      Color(0xFF00FF66),
+    ];
+
+    for (int row = 0; row < rows; row++) {
+      for (int col = 0; col < cols; col++) {
+        final int hp = row == 0 && level > 2 ? 2 : 1;
+
+        bricks.add(
+          Brick(
+            x: padding + col * (brickWidth + padding),
+            y: GameConstants.brickTop + row * (brickHeight + padding),
+            width: brickWidth,
+            height: brickHeight,
+            color: neonColors[row % neonColors.length],
+            hp: hp,
+            maxHp: hp,
+          ),
+        );
+      }
+    }
+  }
+
+  // ============================================================
+  // GAME CONTROL
+  // ============================================================
+
+  void startGame() {
+    gameTimer?.cancel();
+
+    setState(() {
+      score = 0;
+      lives = GameConstants.startingLives;
+      level = GameConstants.startingLevel;
+
+      isNewHighScore = false;
+      isGameOver = false;
+      isPaused = false;
+      isPlaying = true;
+    });
+
+    _initializeLevel();
+    _startGameTimer();
+  }
+
+  void _togglePause() {
+    if (!isPlaying || isGameOver) return;
+
+    audioManager.tap();
+
+    setState(() {
+      isPaused = !isPaused;
+    });
+  }
+
+  void _startGameTimer() {
+    gameTimer?.cancel();
+
+    gameTimer = Timer.periodic(
+      const Duration(milliseconds: 16),
+      (_) {
+        if (isPlaying && !isPaused) {
+          _updateGame();
+        }
+      },
+    );
+  }
+
+  void _resetBall() {
+    ballX = canvasWidth / 2;
+    ballY = canvasHeight - GameConstants.paddleBottomOffset - 40;
+
+    final double levelSpeed = GameConstants.baseBallHorizontalSpeed +
+        level * GameConstants.ballSpeedPerLevel;
+
+    final double horizontal =
+        max(GameConstants.minBallSpeed * 0.65, levelSpeed);
+
+    final double vertical = max(GameConstants.minBallSpeed, levelSpeed);
+
+    ballDx = (Random().nextBool() ? 1.0 : -1.0) * horizontal;
+
+    ballDy = -vertical;
+
+    _ballWasLost = false;
+  }
+
+  void _updateGame() {
+    if (!mounted || !isPlaying || isPaused || isGameOver) {
+      return;
+    }
+
+    setState(() {
+      // ------------------------------------------------------
+      // BALL MOVEMENT
+      // ------------------------------------------------------
+
+      ballX += ballDx;
+      ballY += ballDy;
+
+      // ------------------------------------------------------
+      // SPEED LIMIT
+      // ------------------------------------------------------
+
+      final double speed = sqrt(
+        ballDx * ballDx + ballDy * ballDy,
+      );
+
+      if (speed > GameConstants.maxBallSpeed) {
+        final double scale = GameConstants.maxBallSpeed / speed;
+
+        ballDx *= scale;
+        ballDy *= scale;
+      }
+
+      if (speed < GameConstants.minBallSpeed && speed > 0) {
+        final double scale = GameConstants.minBallSpeed / speed;
+
+        ballDx *= scale;
+        ballDy *= scale;
+      }
+
+      // ------------------------------------------------------
+      // LEFT / RIGHT WALL
+      // ------------------------------------------------------
+
+      if (ballX - ballRadius <= 0) {
+        ballX = ballRadius;
+        ballDx = ballDx.abs();
+      } else if (ballX + ballRadius >= canvasWidth) {
+        ballX = canvasWidth - ballRadius;
+        ballDx = -ballDx.abs();
+      }
+
+      // ------------------------------------------------------
+      // TOP WALL
+      // ------------------------------------------------------
+
+      if (ballY - ballRadius <= 0) {
+        ballY = ballRadius;
+        ballDy = ballDy.abs();
+      }
+
+      // ------------------------------------------------------
+      // PADDLE
+      // ------------------------------------------------------
+
+      final double paddleY = canvasHeight - GameConstants.paddleBottomOffset;
+
+      final bool paddleCollision = ballDy > 0 &&
+          ballY + ballRadius >= paddleY &&
+          ballY - ballRadius <= paddleY + paddleHeight &&
+          ballX >= paddleX - ballRadius &&
+          ballX <= paddleX + paddleWidth + ballRadius;
+
+      if (paddleCollision) {
+        ballY = paddleY - ballRadius - 0.5;
+
+        final double paddleCenter = paddleX + paddleWidth / 2;
+
+        final double hit =
+            ((ballX - paddleCenter) / (paddleWidth / 2)).clamp(-1.0, 1.0);
+
+        final double currentSpeed = max(
+          GameConstants.minBallSpeed,
+          sqrt(ballDx * ballDx + ballDy * ballDy),
+        );
+
+        double normalizedX = hit * GameConstants.paddleHitInfluence;
+
+        // Never allow a nearly vertical trajectory.
+        if (normalizedX.abs() < GameConstants.paddleMinimumHitAngle) {
+          normalizedX = hit >= 0
+              ? GameConstants.paddleMinimumHitAngle
+              : -GameConstants.paddleMinimumHitAngle;
+        }
+
+        final double newDx = currentSpeed * normalizedX;
+
+        final double newDySquared = max(
+          1.0,
+          currentSpeed * currentSpeed - newDx * newDx,
+        );
+
+        ballDx = newDx;
+        ballDy = -sqrt(newDySquared);
+      }
+
+      // ------------------------------------------------------
+      // LOST BALL
+      // ------------------------------------------------------
+
+      if (ballY - ballRadius > canvasHeight && !_ballWasLost) {
+        _ballWasLost = true;
+        lives--;
+
+        if (lives <= 0) {
+          _gameOver();
+          return;
+        }
+
+        _resetBall();
+        return;
+      }
+
+      // ------------------------------------------------------
+      // BRICK COLLISIONS
+      // ------------------------------------------------------
+
+      bool brickHitThisFrame = false;
+
+      for (int i = bricks.length - 1; i >= 0; i--) {
+        final Brick brick = bricks[i];
+
+        final bool collision = ballX + ballRadius >= brick.x &&
+            ballX - ballRadius <= brick.x + brick.width &&
+            ballY + ballRadius >= brick.y &&
+            ballY - ballRadius <= brick.y + brick.height;
+
+        if (!collision) {
+          continue;
+        }
+
+        // Only one brick collision per frame.
+        if (brickHitThisFrame) {
+          break;
+        }
+
+        brickHitThisFrame = true;
+
+        // Determine the collision side so the ball does not
+        // repeatedly bounce inside the brick.
+        final double brickCenterX = brick.x + brick.width / 2;
+
+        final double brickCenterY = brick.y + brick.height / 2;
+
+        final double dx = ballX - brickCenterX;
+
+        final double dy = ballY - brickCenterY;
+
+        if (dx.abs() > dy.abs()) {
+          ballDx = dx >= 0 ? ballDx.abs() : -ballDx.abs();
+
+          if (dx >= 0) {
+            ballX = brick.x + brick.width + ballRadius;
+          } else {
+            ballX = brick.x - ballRadius;
+          }
+        } else {
+          ballDy = dy >= 0 ? ballDy.abs() : -ballDy.abs();
+
+          if (dy >= 0) {
+            ballY = brick.y + brick.height + ballRadius;
+          } else {
+            ballY = brick.y - ballRadius;
+          }
+        }
+
+        brick.hp--;
+
+        score += GameConstants.normalBrickHitScore;
+
+        _spawnParticles(
+          brick.x + brick.width / 2,
+          brick.y + brick.height / 2,
+          brick.color,
+        );
+
+        if (brick.hp <= 0) {
+          bricks.removeAt(i);
+
+          score += brick.isBoss
+              ? GameConstants.bossDestroyBonus
+              : GameConstants.normalBrickDestroyScore;
+        }
+      }
+
+      // ------------------------------------------------------
+      // NEXT LEVEL
+      // ------------------------------------------------------
+
+      if (bricks.isEmpty) {
+        if (level < GameConstants.maximumLevel) {
+          level++;
+        }
+
+        score += GameConstants.nextLevelBonus;
+
+        _spawnParticles(
+          canvasWidth / 2,
+          canvasHeight / 2,
+          GameConstants.neonYellow,
+        );
+
+        _initializeLevel();
+      }
+
+      // ------------------------------------------------------
+      // PARTICLES
+      // ------------------------------------------------------
+
+      for (int i = particles.length - 1; i >= 0; i--) {
+        final Particle p = particles[i];
+
+        p.x += p.dx;
+        p.y += p.dy;
+
+        p.alpha -= GameConstants.particleFadeSpeed;
+
+        if (p.alpha <= 0) {
+          particles.removeAt(i);
+        }
+      }
+    });
+  }
+
+  void _spawnParticles(
+    double x,
+    double y,
+    Color color,
+  ) {
+    for (int i = 0; i < GameConstants.particlesPerHit; i++) {
+      particles.add(
+        Particle(
+          x: x,
+          y: y,
+          dx: (Random().nextDouble() - 0.5) *
+              GameConstants.particleVelocityRange,
+          dy: (Random().nextDouble() - 0.5) *
+              GameConstants.particleVelocityRange,
+          size: Random().nextDouble() * GameConstants.particleMaxSize +
+              GameConstants.particleBaseSize,
+          color: color,
+        ),
+      );
+    }
+  }
+
+  void _gameOver() {
+    gameTimer?.cancel();
+
+    setState(() {
+      isPlaying = false;
+      isGameOver = true;
+    });
+
+    _saveHighScore();
+
+    _showInterstitial();
+  }
+
+  // ============================================================
+  // UI
+  // ============================================================
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF05050D),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          canvasWidth = constraints.maxWidth;
+
+          canvasHeight = constraints.maxHeight;
+
+          return GestureDetector(
+            onHorizontalDragUpdate: (details) {
+              if (!isPlaying || isPaused) {
+                return;
+              }
+
+              setState(() {
+                paddleX += details.delta.dx;
+
+                paddleX = paddleX.clamp(
+                  0.0,
+                  canvasWidth - paddleWidth,
+                );
+              });
+            },
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: GamePainter(
+                      paddleX: paddleX,
+                      paddleWidth: paddleWidth,
+                      paddleHeight: paddleHeight,
+                      ballX: ballX,
+                      ballY: ballY,
+                      ballRadius: ballRadius,
+                      bricks: bricks,
+                      particles: particles,
+                    ),
+                  ),
+                ),
+
+                // HUD
+                Positioned(
+                  top: 40,
+                  left: 18,
+                  right: 18,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      _neonText(
+                        'النقاط $score',
+                        const Color(
+                          0xFF00E5FF,
+                        ),
+                      ),
+                      _neonText(
+                        'المستوى $level',
+                        const Color(
+                          0xFFFFE600,
+                        ),
+                      ),
+                      _neonText(
+                        '❤️ $lives',
+                        const Color(
+                          0xFFFF007F,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                if (!isPlaying && !isGameOver) _startScreen(),
+
+                if (isGameOver) _gameOverScreen(),
+                if (isPaused && isPlaying) _pauseScreen(),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _neonText(
+    String text,
+    Color color,
+  ) {
+    return Text(
+      text,
+      style: TextStyle(
+        color: color,
+        fontSize: 18,
+        fontWeight: FontWeight.bold,
+        shadows: [
+          Shadow(
+            color: color,
+            blurRadius: 12,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _startScreen() {
+    if (!settingsLoaded) {
+      return const Center(
+        child: CircularProgressIndicator(
+          color: Color(0xFF00E5FF),
+        ),
+      );
+    }
+
+    return StartMenu(
+      highScore: highScore,
+      onPlay: startGame,
+      onSettings: _openSettings,
+    );
+  }
+
+  Widget _pauseScreen() {
+    return Container(
+      color: Colors.black.withValues(alpha: 0.72),
+      child: Center(
+        child: Container(
+          margin: const EdgeInsets.all(28),
+          padding: const EdgeInsets.all(28),
+          decoration: BoxDecoration(
+            color: GameConstants.panelColor,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+              color: GameConstants.neonCyan,
+              width: 2,
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: GameConstants.neonCyan,
+                blurRadius: 24,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'PAUSED',
+                style: TextStyle(
+                  color: GameConstants.neonCyan,
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: _togglePause,
+                child: const Text('متابعة ▶'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _gameOverScreen() {
+    return Container(
+      color: Colors.black.withValues(alpha: 0.82),
+      child: Center(
+        child: Container(
+          margin: const EdgeInsets.all(28),
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0D0B1E),
+            borderRadius: BorderRadius.circular(
+              22,
+            ),
+            border: Border.all(
+              color: const Color(
+                0xFFFF007F,
+              ),
+              width: 2,
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0xFFFF007F),
+                blurRadius: 25,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'GAME OVER',
+                style: TextStyle(
+                  color: Color(0xFFFF007F),
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(
+                height: 15,
+              ),
+              Text(
+                'النقاط: $score',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                ),
+              ),
+              const SizedBox(
+                height: 24,
+              ),
+              ElevatedButton.icon(
+                onPressed: _showRewardedAd,
+                icon: const Icon(
+                  Icons.movie,
+                  color: Colors.black,
+                ),
+                label: const Text(
+                  'شاهد إعلان + حياة ❤️',
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(
+                    0xFFFFE600,
+                  ),
+                ),
+              ),
+              const SizedBox(
+                height: 12,
+              ),
+              OutlinedButton(
+                onPressed: startGame,
+                child: const Text(
+                  'إعادة اللعب 🔄',
+                  style: TextStyle(
+                    color: Color(
+                      0xFF00E5FF,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    gameTimer?.cancel();
+    gameTimer = null;
+    isPlaying = false;
+    isPaused = false;
+    super.dispose();
+  }
+}

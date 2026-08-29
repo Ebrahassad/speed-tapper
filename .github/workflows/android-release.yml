@@ -1,0 +1,61 @@
+name: Android Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build APK with Gradle
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Find APK
+        run: |
+          echo "===== SEARCHING APK ====="
+          find . -type f -name "*.apk" -print
+          echo "===== SEARCHING FROM ROOT ====="
+          find "$GITHUB_WORKSPACE" -type f -name "*.apk" -print
+
+      - name: Collect APK
+        run: |
+          APK=$(find "$GITHUB_WORKSPACE" -type f -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "ERROR: No APK found"
+            exit 1
+          fi
+          echo "APK FOUND: $APK"
+          mkdir -p release
+          cp "$APK" release/speed-tapper-release.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: speed-tapper-release
+          path: release/speed-tapper-release.apk
