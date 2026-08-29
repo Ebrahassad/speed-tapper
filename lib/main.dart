@@ -181,7 +181,6 @@ class _GameScreenState extends State<GameScreen> {
     _loadHighScore();
     _loadSettings();
     try {
-      AdsManager.initialize();
     } catch (e, st) {
       _writeCrash('AdsManager.initialize failed: $e', st);
     }
